@@ -5,6 +5,7 @@ import pytest
 from bcp.domain.projects import (
     InMemoryProjectRepository,
     Project,
+    ProjectDeadlineImmutableError,
     ProjectNotFoundError,
     ProjectStatus,
 )
@@ -35,16 +36,12 @@ def test_project_can_be_created():
 
 def test_project_requires_timezone_aware_deadline():
     with pytest.raises(ValueError):
-        _valid_project(
-            delivery_deadline=datetime(2026, 1, 31, 12, 0)
-        )
+        _valid_project(delivery_deadline=datetime(2026, 1, 31, 12, 0))
 
 
 def test_project_contract_start_must_not_be_after_deadline():
     with pytest.raises(ValueError):
-        _valid_project(
-            contract_start_date=date(2026, 2, 1)
-        )
+        _valid_project(contract_start_date=date(2026, 2, 1))
 
 
 def test_repository_add_and_get():
@@ -62,3 +59,57 @@ def test_repository_get_missing_project_raises():
 
     with pytest.raises(ProjectNotFoundError):
         repo.get("NOPE")
+
+
+def test_booked_project_deadline_cannot_change_via_normal_path():
+    project = _valid_project(status=ProjectStatus.BOOKED)
+    new_deadline = datetime(2026, 2, 5, 12, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(ProjectDeadlineImmutableError):
+        project.with_delivery_deadline(new_deadline)
+
+
+def test_booked_project_deadline_can_change_manually_with_log_entry():
+    project = _valid_project(status=ProjectStatus.BOOKED)
+    new_deadline = datetime(2026, 2, 5, 12, 0, tzinfo=timezone.utc)
+    changed_at = datetime(2026, 1, 10, 9, 0, tzinfo=timezone.utc)
+
+    updated = project.change_delivery_deadline_manual(
+        new_deadline, reason="Publisher moved corrections window", changed_at=changed_at
+    )
+
+    assert updated.delivery_deadline == new_deadline
+    assert updated.delivery_deadline_anchor == project.delivery_deadline
+    assert len(updated.deadline_changes) == 1
+
+    ch = updated.deadline_changes[0]
+    assert ch.changed_at == changed_at
+    assert ch.old_deadline == project.delivery_deadline
+    assert ch.new_deadline == new_deadline
+    assert ch.reason == "Publisher moved corrections window"
+
+
+def test_non_booked_project_deadline_can_change_via_normal_path():
+    project = _valid_project(status=ProjectStatus.DRAFT)
+    new_deadline = datetime(2026, 2, 5, 12, 0, tzinfo=timezone.utc)
+
+    updated = project.with_delivery_deadline(new_deadline)
+    assert updated.delivery_deadline == new_deadline
+    # anchor should remain the original creation deadline, not drift
+    assert updated.delivery_deadline_anchor == project.delivery_deadline
+
+
+def test_deadline_change_log_must_form_continuous_chain():
+    project = _valid_project(status=ProjectStatus.BOOKED)
+    d1 = datetime(2026, 2, 5, 12, 0, tzinfo=timezone.utc)
+    d2 = datetime(2026, 2, 10, 12, 0, tzinfo=timezone.utc)
+
+    p1 = project.change_delivery_deadline_manual(d1, reason="Reason 1")
+    p2 = p1.change_delivery_deadline_manual(d2, reason="Reason 2")
+
+    assert p2.delivery_deadline == d2
+    assert len(p2.deadline_changes) == 2
+    assert p2.deadline_changes[0].old_deadline == project.delivery_deadline
+    assert p2.deadline_changes[0].new_deadline == d1
+    assert p2.deadline_changes[1].old_deadline == d1
+    assert p2.deadline_changes[1].new_deadline == d2
