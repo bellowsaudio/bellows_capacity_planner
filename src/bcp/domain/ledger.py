@@ -92,3 +92,33 @@ class InMemoryLedgerRepository(LedgerRepository):
         if project_id is None:
             return list(entries)
         return [e for e in entries if e.project_id == project_id]
+def total_finished_hours_for_project(
+    entries: Iterable[LedgerEntry],
+    *,
+    project_id: str,
+) -> float:
+    """
+    Sum finished hours for a single project from ledger entries.
+
+    Includes negative (compensating) entries.
+    """
+    if not project_id.strip():
+        raise ValueError("project_id must be non-empty")
+
+    total = 0.0
+    for e in entries:
+        if e.project_id == project_id:
+            total += e.finished_hours
+    return total
+
+
+def totals_by_project(entries: Iterable[LedgerEntry]) -> Dict[str, float]:
+    """
+    Sum finished hours grouped by project_id from ledger entries.
+
+    Includes negative (compensating) entries.
+    """
+    totals: Dict[str, float] = {}
+    for e in entries:
+        totals[e.project_id] = totals.get(e.project_id, 0.0) + e.finished_hours
+    return totals

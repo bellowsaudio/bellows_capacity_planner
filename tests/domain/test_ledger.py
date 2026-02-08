@@ -7,7 +7,10 @@ from bcp.domain.ledger import (
     LedgerAppendOnlyError,
     LedgerEntry,
     LedgerEntryNotFoundError,
+    total_finished_hours_for_project,
+    totals_by_project,
 )
+
 
 
 def _entry(**overrides) -> LedgerEntry:
@@ -74,3 +77,42 @@ def test_repo_is_append_only_update_and_delete_raise():
 
     with pytest.raises(LedgerAppendOnlyError):
         repo.delete("L-001")
+def test_total_finished_hours_for_project_sums_only_that_project():
+    entries = [
+        _entry(id="L-001", project_id="P-001", finished_hours=1.0),
+        _entry(id="L-002", project_id="P-002", finished_hours=2.0),
+        _entry(id="L-003", project_id="P-001", finished_hours=0.5),
+    ]
+
+    assert total_finished_hours_for_project(entries, project_id="P-001") == 1.5
+    assert total_finished_hours_for_project(entries, project_id="P-002") == 2.0
+
+
+def test_total_finished_hours_for_project_includes_negative_entries():
+    entries = [
+        _entry(id="L-001", project_id="P-001", finished_hours=2.0),
+        _entry(id="L-002", project_id="P-001", finished_hours=-0.5),
+    ]
+
+    assert total_finished_hours_for_project(entries, project_id="P-001") == 1.5
+
+
+def test_total_finished_hours_for_project_empty_is_zero():
+    assert total_finished_hours_for_project([], project_id="P-001") == 0.0
+
+
+def test_totals_by_project_groups_and_sums():
+    entries = [
+        _entry(id="L-001", project_id="P-001", finished_hours=1.0),
+        _entry(id="L-002", project_id="P-002", finished_hours=2.0),
+        _entry(id="L-003", project_id="P-001", finished_hours=0.5),
+        _entry(id="L-004", project_id="P-002", finished_hours=-0.25),
+    ]
+
+    totals = totals_by_project(entries)
+    assert totals["P-001"] == 1.5
+    assert totals["P-002"] == 1.75
+
+
+def test_totals_by_project_empty_is_empty_dict():
+    assert totals_by_project([]) == {}
