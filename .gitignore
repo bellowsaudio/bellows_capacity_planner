@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+# Python build artefacts
+*.egg-info/
+__pycache__/
