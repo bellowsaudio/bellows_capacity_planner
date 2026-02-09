@@ -47,6 +47,10 @@ class Project:
     - defines commercial intent (scope, priority, deadlines)
     - does NOT own time directly
     - is referenced by blocks and ledger entries
+
+    E3-T2:
+    - planning_parameters_version_id binds the project to the parameters version used
+      for planning (baseline/stretch assumptions) at booking time.
     """
 
     id: str
@@ -56,6 +60,9 @@ class Project:
     contract_start_date: date
     delivery_deadline: datetime
     priority: int
+
+    # E3-T2: bind project to planning parameters version (required once not DRAFT).
+    planning_parameters_version_id: Optional[str] = None
 
     # --- E6-T2: Deadline immutability / audit trail ---
     # Anchor is set on first creation and preserved across copies.
@@ -74,6 +81,17 @@ class Project:
 
         if self.contract_start_date > self.delivery_deadline.date():
             raise ValueError("contract_start_date cannot be after delivery_deadline")
+
+        # E3-T2 validation: enforce binding once the project is not a draft.
+        if self.planning_parameters_version_id is not None:
+            if not self.planning_parameters_version_id.strip():
+                raise ValueError("planning_parameters_version_id must be non-empty when provided")
+
+        if self.status is not ProjectStatus.DRAFT:
+            if self.planning_parameters_version_id is None:
+                raise ValueError(
+                    "planning_parameters_version_id is required for non-draft projects"
+                )
 
         # Initialize anchor on first creation (and preserve on dataclasses.replace copies).
         if self.delivery_deadline_anchor is None:

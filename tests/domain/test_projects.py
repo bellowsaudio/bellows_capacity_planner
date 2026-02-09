@@ -17,14 +17,13 @@ def _valid_project(**overrides):
         name=overrides.get("name", "Test Project"),
         status=overrides.get("status", ProjectStatus.BOOKED),
         planned_finished_hours=overrides.get("planned_finished_hours", 10.0),
-        contract_start_date=overrides.get(
-            "contract_start_date", date(2026, 1, 1)
-        ),
+        contract_start_date=overrides.get("contract_start_date", date(2026, 1, 1)),
         delivery_deadline=overrides.get(
             "delivery_deadline",
             datetime(2026, 1, 31, 12, 0, tzinfo=timezone.utc),
         ),
         priority=overrides.get("priority", 1),
+        planning_parameters_version_id=overrides.get("planning_parameters_version_id", "PP-001"),
     )
 
 
@@ -32,11 +31,12 @@ def test_project_can_be_created():
     project = _valid_project()
     assert project.id == "P-001"
     assert project.status is ProjectStatus.BOOKED
+    assert project.planning_parameters_version_id == "PP-001"
 
 
 def test_project_requires_timezone_aware_deadline():
     with pytest.raises(ValueError):
-        _valid_project(delivery_deadline=datetime(2026, 1, 31, 12, 0))
+        _valid_project(delivery_deadline=datetime(2026, 1, 31, 12, 0, tzinfo=None))
 
 
 def test_project_contract_start_must_not_be_after_deadline():
@@ -90,7 +90,7 @@ def test_booked_project_deadline_can_change_manually_with_log_entry():
 
 
 def test_non_booked_project_deadline_can_change_via_normal_path():
-    project = _valid_project(status=ProjectStatus.DRAFT)
+    project = _valid_project(status=ProjectStatus.DRAFT, planning_parameters_version_id=None)
     new_deadline = datetime(2026, 2, 5, 12, 0, tzinfo=timezone.utc)
 
     updated = project.with_delivery_deadline(new_deadline)
@@ -113,3 +113,21 @@ def test_deadline_change_log_must_form_continuous_chain():
     assert p2.deadline_changes[0].new_deadline == d1
     assert p2.deadline_changes[1].old_deadline == d1
     assert p2.deadline_changes[1].new_deadline == d2
+
+
+# --- E3-T2 specific tests ---
+
+
+def test_draft_project_may_omit_planning_parameters_version_id():
+    p = _valid_project(status=ProjectStatus.DRAFT, planning_parameters_version_id=None)
+    assert p.planning_parameters_version_id is None
+
+
+def test_non_draft_project_requires_planning_parameters_version_id():
+    with pytest.raises(ValueError, match="required for non-draft projects"):
+        _valid_project(status=ProjectStatus.BOOKED, planning_parameters_version_id=None)
+
+
+def test_planning_parameters_version_id_must_be_non_empty_when_provided():
+    with pytest.raises(ValueError, match="must be non-empty"):
+        _valid_project(status=ProjectStatus.DRAFT, planning_parameters_version_id="   ")
