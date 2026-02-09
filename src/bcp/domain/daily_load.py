@@ -1,10 +1,8 @@
-# src/bcp/domain/daily_load.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, FrozenSet, Iterable, Optional, Sequence, Set
+from typing import Dict, FrozenSet, Iterable, Optional, Sequence, Set, Tuple
 
 from bcp.domain.block_types import BlockType
 from bcp.domain.blocks import Block
@@ -46,13 +44,36 @@ class DailyLoadComputationError:
     message: str
 
 
+class InfeasiblePlanError(RuntimeError):
+    """
+    Raised when at least one project is infeasible (FH remaining with zero recordable days).
+
+    E10-T1 rule:
+      Infeasible states must be explicit and unignorable.
+    """
+
+    def __init__(self, *, errors: Tuple[DailyLoadComputationError, ...]) -> None:
+        self.errors = errors
+        super().__init__(self._format(errors))
+
+    @staticmethod
+    def _format(errors: Tuple[DailyLoadComputationError, ...]) -> str:
+        parts = []
+        for e in errors:
+            parts.append(f"{e.project_id}: {e.error_type}: {e.message}")
+        return "Infeasible plan detected:\n" + "\n".join(parts)
+
+
 @dataclass(frozen=True, slots=True)
 class DailyLoadResult:
     """
     E4-T4 output container.
 
     - daily: day-indexed load model (includes zero-load days in the horizon)
-    - errors: explicit failure states (infeasible quota, negative remaining FH, etc.)
+    - errors: explicit failure states (negative remaining FH, etc.)
+
+    Note:
+      - E10-T1 elevates infeasible quota states to an exception, so they will not appear here.
     """
     daily: Dict[date, DailyLoad]
     errors: tuple[DailyLoadComputationError, ...]
@@ -76,13 +97,13 @@ def compute_daily_load(
       - Baseline/stretch are global per-day thresholds across ALL projects.
       - Overload is flagged; never auto-resolved.
 
+    E10-T1:
+      - If any project is infeasible (FH remaining with zero recordable days), raise
+        InfeasiblePlanError (explicit and unignorable).
+
     Horizon:
       - from as_of_date through the latest project window end-date (inclusive).
       - includes days with zero load (inspectable).
-
-    Closed days:
-      - not yet modelled elsewhere; default is empty set (freelancer assumption).
-      - days become non-recordable only if explicitly blocked (e.g. AWAY_FROM_STUDIO).
     """
     if closed_days is None:
         closed_days = set()
@@ -96,25 +117,22 @@ def compute_daily_load(
     if horizon_start > horizon_end:
         return DailyLoadResult(daily={}, errors=())
 
-    # Precompute away days once; apply per-project membership checks by date.
     away_days = _days_covered_by_blocks(blocks, BlockType.AWAY_FROM_STUDIO)
 
-    # Compute per-project quota and recordable-day membership.
     quotas_by_project: Dict[str, float] = {}
     recordable_days_by_project: Dict[str, FrozenSet[date]] = {}
     errors: list[DailyLoadComputationError] = []
+    infeasible_errors: list[DailyLoadComputationError] = []
 
-    ledger_list = list(ledger_entries)  # ensure single-pass iterables are safe
+    ledger_list = list(ledger_entries)
 
     for p in projects:
         window = recording_window_for_project(p)
         if window.end_date < as_of_date:
-            # Project entirely in the past relative to this planning run.
             quotas_by_project[p.id] = 0.0
             recordable_days_by_project[p.id] = frozenset()
             continue
 
-        # Recordable days for this project in the evaluated portion of the window.
         recordable_days = _recordable_days_for_project(
             project=p,
             as_of_date=as_of_date,
@@ -124,7 +142,6 @@ def compute_daily_load(
         )
         recordable_days_by_project[p.id] = recordable_days
 
-        # Remaining FH (explicit error if negative).
         try:
             remaining_fh = compute_remaining_finished_hours(
                 project=p,
@@ -141,26 +158,27 @@ def compute_daily_load(
             quotas_by_project[p.id] = 0.0
             continue
 
-        # Daily quota (explicit infeasible if days == 0 and FH > 0).
         try:
             quota = compute_daily_quota_fh_per_day(
                 remaining_fh=remaining_fh,
                 remaining_recordable_days=len(recordable_days),
             )
         except InfeasibleDailyQuotaError as e:
-            errors.append(
-                DailyLoadComputationError(
-                    project_id=p.id,
-                    error_type="quota_infeasible",
-                    message=str(e),
-                )
+            err = DailyLoadComputationError(
+                project_id=p.id,
+                error_type="quota_infeasible",
+                message=str(e),
             )
+            infeasible_errors.append(err)
             quotas_by_project[p.id] = 0.0
             continue
 
         quotas_by_project[p.id] = quota
 
-    # Aggregate per-day load.
+    # E10-T1: infeasible states are explicit and unignorable.
+    if infeasible_errors:
+        raise InfeasiblePlanError(errors=tuple(infeasible_errors))
+
     daily: Dict[date, DailyLoad] = {}
     current = horizon_start
     while current <= horizon_end:
@@ -184,7 +202,6 @@ def compute_daily_load(
 
 
 def _add_one_day(d: date) -> date:
-    # date arithmetic without importing timedelta at top-level (keeps imports tight)
     from datetime import timedelta
     return d + timedelta(days=1)
 
