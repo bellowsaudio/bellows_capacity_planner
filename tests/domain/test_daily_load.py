@@ -1,6 +1,6 @@
 # tests/domain/test_daily_load.py
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, time
 
 from bcp.domain.daily_load import compute_daily_load
 from bcp.domain.planning_parameters import PlanningParametersVersion
@@ -17,14 +17,16 @@ def _project(
     # Use a timezone-aware deadline instant; the window end is deadline_date (Stage-3 rule).
     deadline_dt = datetime(deadline_date.year, deadline_date.month, deadline_date.day, 12, 0, tzinfo=timezone.utc)
     return Project(
-        id=pid,
-        name=f"Project {pid}",
-        status=ProjectStatus.BOOKED,
-        planned_finished_hours=planned_fh,
-        contract_start_date=contract_start,
-        delivery_deadline=deadline_dt,
-        priority=1,
-    )
+    id=pid,
+    name=f"Project {pid}",
+    status=ProjectStatus.BOOKED,
+    planned_finished_hours=planned_fh,
+    contract_start_date=contract_start,
+    delivery_deadline=datetime.combine(deadline_date, time(12, 0), tzinfo=timezone.utc),
+    priority=1,
+    planning_parameters_version_id="PP-001",
+)
+
 
 
 def test_daily_load_sums_project_quotas_and_flags_baseline_and_stretch():
