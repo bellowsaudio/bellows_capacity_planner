@@ -1,8 +1,7 @@
-# tests/domain/test_remaining_days.py
-
 from datetime import date, datetime, timezone
 
 from bcp.domain.blocks import Block
+from bcp.domain.day_overrides import DayOverride, DayOverrideType
 from bcp.domain.remaining_days import compute_remaining_recordable_days
 from bcp.domain.projects import Project, ProjectStatus
 
@@ -24,7 +23,6 @@ def _project(
 
 
 def test_single_day_window_counts_as_one_when_recordable():
-    # contract_start_date == delivery_deadline.date() => 1-day inclusive window
     p = _project(
         contract_start=date(2026, 3, 10),
         deadline_utc=datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc),
@@ -35,6 +33,7 @@ def test_single_day_window_counts_as_one_when_recordable():
         as_of_date=date(2026, 3, 10),
         blocks=[],
         closed_days=set(),
+        day_overrides=[],
     )
 
     assert res.remaining_recordable_days == 1
@@ -55,9 +54,9 @@ def test_away_removes_exactly_one_day():
         as_of_date=date(2026, 3, 10),
         blocks=[away],
         closed_days=set(),
+        day_overrides=[],
     )
 
-    # Window is 10..12 inclusive => 3 days, minus 1 away => 2
     assert res.remaining_recordable_days == 2
     assert date(2026, 3, 11) in res.excluded_away
 
@@ -73,10 +72,39 @@ def test_closed_day_removes_exactly_one_day():
         as_of_date=date(2026, 3, 10),
         blocks=[],
         closed_days={date(2026, 3, 11)},
+        day_overrides=[],
     )
 
     assert res.remaining_recordable_days == 2
     assert date(2026, 3, 11) in res.excluded_closed
+
+
+def test_no_recording_override_removes_exactly_one_day():
+    p = _project(
+        contract_start=date(2026, 3, 10),
+        deadline_utc=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
+    )
+
+    o = DayOverride(
+        id="O-1",
+        project_id="p1",
+        day=date(2026, 3, 11),
+        override_type=DayOverrideType.NO_RECORDING,
+        set_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        note="Family day",
+    )
+
+    res = compute_remaining_recordable_days(
+        project=p,
+        as_of_date=date(2026, 3, 10),
+        blocks=[],
+        closed_days=set(),
+        day_overrides=[o],
+    )
+
+    # Window 10..12 inclusive => 3 days, minus override(11) => 2
+    assert res.remaining_recordable_days == 2
+    assert date(2026, 3, 11) in res.excluded_no_recording_override
 
 
 def test_as_of_date_clips_start_but_does_not_move_endpoints():
@@ -90,14 +118,13 @@ def test_as_of_date_clips_start_but_does_not_move_endpoints():
         as_of_date=date(2026, 3, 10),
         blocks=[],
         closed_days=set(),
+        day_overrides=[],
     )
 
-    # remaining window evaluated is 10..31 inclusive => 22 days
     assert res.remaining_recordable_days == 22
     assert res.evaluated_start_date == date(2026, 3, 10)
     assert res.evaluated_end_date == date(2026, 3, 31)
 
-    # Original window endpoints remain canonical
     assert res.window.start_date == date(2026, 3, 1)
     assert res.window.end_date == date(2026, 3, 31)
 
@@ -108,7 +135,6 @@ def test_final_day_excluded_if_covered_by_buffer_like_block():
         deadline_utc=datetime(2026, 3, 12, 12, 0, tzinfo=timezone.utc),
     )
 
-    # final day == 2026-03-12
     sick_buffer = Block.create("SICK_BUFFER", date(2026, 3, 12), date(2026, 3, 12))
 
     res = compute_remaining_recordable_days(
@@ -116,8 +142,8 @@ def test_final_day_excluded_if_covered_by_buffer_like_block():
         as_of_date=date(2026, 3, 10),
         blocks=[sick_buffer],
         closed_days=set(),
+        day_overrides=[],
     )
 
-    # Window 10..12 inclusive => 3 days, but final day excluded => 2
     assert res.remaining_recordable_days == 2
     assert date(2026, 3, 12) in res.excluded_nonrecordable_final_day

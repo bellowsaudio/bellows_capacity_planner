@@ -1,14 +1,13 @@
-# src/bcp/domain/remaining_days.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import FrozenSet, Iterable, Optional, Sequence, Set
+from typing import FrozenSet, Optional, Sequence, Set
 
 from bcp.domain.block_types import BlockType
 from bcp.domain.blocks import Block
 from bcp.domain.date_ranges import InclusiveDateRange
+from bcp.domain.day_overrides import DayOverride, no_recording_days_for_project
 from bcp.domain.projects import Project
 from bcp.domain.time.moments import Moment, effective_window_end_date
 
@@ -28,6 +27,7 @@ class RemainingRecordableDaysResult:
     evaluated_end_date: date
     excluded_away: FrozenSet[date]
     excluded_closed: FrozenSet[date]
+    excluded_no_recording_override: FrozenSet[date]
     excluded_nonrecordable_final_day: FrozenSet[date]
 
 
@@ -54,21 +54,23 @@ def compute_remaining_recordable_days(
     as_of_date: date,
     blocks: Sequence[Block],
     closed_days: Optional[Set[date]] = None,
+    day_overrides: Optional[Sequence[DayOverride]] = None,
 ) -> RemainingRecordableDaysResult:
     """
     Compute remaining recordable days for a single project.
 
-    E4-T1 rules implemented (strict, inspectable):
+    Rules (strict, inspectable):
       - Candidate days are days inside the project's RECORDING_WINDOW (inclusive),
         but only from max(as_of_date, window.start_date) onward.
       - Subtract:
           - AWAY_FROM_STUDIO
           - closed days
-          - (DayOverride(NO_RECORDING) will be added in E5-T1; not implemented here)
+          - DayOverride(NO_RECORDING) for this project (E5-T1)
       - Endpoints never move (no sliding deadlines).
       - Final day is counted only if explicitly recordable.
         For E4-T1 we interpret "not explicitly recordable" as:
           - the final day is covered by a known "buffer-like" block type.
+        (If NO_RECORDING applies to final day, it is excluded via overrides.)
 
     Notes:
       - All evaluation here is day-based (date objects).
@@ -77,6 +79,9 @@ def compute_remaining_recordable_days(
     """
     if closed_days is None:
         closed_days = set()
+
+    if day_overrides is None:
+        day_overrides = []
 
     window = recording_window_for_project(project)
 
@@ -92,23 +97,24 @@ def compute_remaining_recordable_days(
             evaluated_end_date=evaluated_end,
             excluded_away=frozenset(),
             excluded_closed=frozenset(),
+            excluded_no_recording_override=frozenset(),
             excluded_nonrecordable_final_day=frozenset(),
         )
 
     away_days = _days_covered_by_blocks(blocks, BlockType.AWAY_FROM_STUDIO)
+    no_recording_override_days = no_recording_days_for_project(day_overrides, project_id=project.id)
 
     # Final-day explicit-recordable rule:
     # If the final day is covered by a "buffer-like" block, we exclude it.
-    # (E5 will add explicit overrides; E4-T1 keeps this loud and simple.)
     final_day = evaluated_end
     final_day_excluded = set()
-
     if _final_day_is_blocked(final_day, blocks):
         final_day_excluded.add(final_day)
 
     recordable_count = 0
     excluded_away = set()
     excluded_closed = set()
+    excluded_no_recording = set()
     excluded_final = set()
 
     for d in InclusiveDateRange(evaluated_start, evaluated_end).iter_days():
@@ -118,6 +124,10 @@ def compute_remaining_recordable_days(
 
         if d in closed_days:
             excluded_closed.add(d)
+            continue
+
+        if d in no_recording_override_days:
+            excluded_no_recording.add(d)
             continue
 
         if d in final_day_excluded:
@@ -133,6 +143,7 @@ def compute_remaining_recordable_days(
         evaluated_end_date=evaluated_end,
         excluded_away=frozenset(excluded_away),
         excluded_closed=frozenset(excluded_closed),
+        excluded_no_recording_override=frozenset(excluded_no_recording),
         excluded_nonrecordable_final_day=frozenset(excluded_final),
     )
 
